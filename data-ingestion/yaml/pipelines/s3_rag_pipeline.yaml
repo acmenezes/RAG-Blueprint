@@ -1,0 +1,398 @@
+# PIPELINE DEFINITION
+# Name: s3-rag-document-ingestion-pipeline
+# Description: Pipeline that fetches documents from S3/MinIO and processes them for RAG
+# Inputs:
+#    bucket_name: str [Default: 'llama']
+#    embedding_dimension: int [Default: 384.0]
+#    embedding_model: str [Default: 'all-MiniLM-L6-v2']
+#    file_extensions: list [Default: ['.pdf']]
+#    file_prefix: str [Default: '']
+#    llama_stack_url: str [Default: 'http://localhost:8321']
+#    max_files: int [Default: 50.0]
+#    minio_access_key: str [Default: 'minio']
+#    minio_endpoint: str [Default: 'http://minio-service:9000']
+#    minio_secret_key: str [Default: 'minio123']
+#    provider_id: str [Default: 'pgvector']
+#    vector_db_id: str [Default: 'pgvector']
+components:
+  comp-rag-docling-component:
+    executorLabel: exec-rag-docling-component
+    inputDefinitions:
+      artifacts:
+        document_path:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+          description: Path to the document or a JSON file containing document paths
+      parameters:
+        embedding_dimension:
+          defaultValue: 384.0
+          description: Dimension size for embeddings
+          isOptional: true
+          parameterType: NUMBER_INTEGER
+        embedding_model:
+          defaultValue: all-MiniLM-L6-v2
+          description: Model to use for embeddings
+          isOptional: true
+          parameterType: STRING
+        llama_stack_url:
+          defaultValue: http://localhost:8321
+          description: URL for the Llama Stack API
+          isOptional: true
+          parameterType: STRING
+        provider_id:
+          defaultValue: pgvector
+          description: Provider ID for vector database
+          isOptional: true
+          parameterType: STRING
+        vector_db_id:
+          defaultValue: pgvector
+          description: ID for the vector database
+          isOptional: true
+          parameterType: STRING
+    outputDefinitions:
+      artifacts:
+        metrics_path:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+      parameters:
+        Output:
+          parameterType: NUMBER_INTEGER
+  comp-s3-document-provider:
+    executorLabel: exec-s3-document-provider
+    inputDefinitions:
+      parameters:
+        bucket_name:
+          description: Name of the S3/MinIO bucket
+          parameterType: STRING
+        download_dir:
+          defaultValue: /tmp/documents
+          description: 'Directory to download files to (default: "/tmp/documents")'
+          isOptional: true
+          parameterType: STRING
+        file_extensions:
+          defaultValue:
+          - .pdf
+          description: 'List of file extensions to fetch (default: [".pdf"])'
+          isOptional: true
+          parameterType: LIST
+        file_prefix:
+          defaultValue: ''
+          description: Only fetch files with this prefix (optional)
+          isOptional: true
+          parameterType: STRING
+        max_files:
+          defaultValue: 100.0
+          description: 'Maximum number of files to fetch (default: 100)'
+          isOptional: true
+          parameterType: NUMBER_INTEGER
+        minio_access_key:
+          description: MinIO/S3 access key
+          parameterType: STRING
+        minio_endpoint:
+          description: MinIO/S3 endpoint URL
+          parameterType: STRING
+        minio_secret_key:
+          description: MinIO/S3 secret key
+          parameterType: STRING
+    outputDefinitions:
+      artifacts:
+        output_path:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+deploymentSpec:
+  executors:
+    exec-rag-docling-component:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - rag_docling_component
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.12.1'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
+          \  python3 -m pip install --quiet --no-warn-script-location 'llama-stack-client==0.1.9'\
+          \ 'docling' 'docling-core' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef rag_docling_component(\n    document_path: InputPath(),\n   \
+          \ metrics_path: OutputPath(),\n    llama_stack_url: str = \"http://localhost:8321\"\
+          ,\n    embedding_model: str = \"all-MiniLM-L6-v2\",\n    embedding_dimension:\
+          \ int = 384,\n    provider_id: str = \"pgvector\",\n    vector_db_id: str\
+          \ = \"pgvector\"\n) -> int:\n    \"\"\"\n    Process documents, convert\
+          \ them to chunks, and store in a vector database.\n\n    Args:\n       \
+          \ document_path (InputPath): Path to the document or a JSON file containing\
+          \ document paths\n        metrics_path (OutputPath): Path to write processing\
+          \ metrics\n        llama_stack_url (str): URL for the Llama Stack API\n\
+          \        embedding_model (str): Model to use for embeddings\n        embedding_dimension\
+          \ (int): Dimension size for embeddings\n        provider_id (str): Provider\
+          \ ID for vector database\n        vector_db_id (str): ID for the vector\
+          \ database\n\n    Returns:\n        int: Number of documents processed\n\
+          \    \"\"\"\n    # === Step 1: Configure Llama Stack client ===\n    client\
+          \ = LlamaStackClient(base_url=llama_stack_url)  # Assumes LLAMA_STACK_API_KEY\
+          \ is set in env\n\n    # === Step 2: Process document path ===\n    # The\
+          \ document_path could be a single file or a JSON file with multiple document\
+          \ paths\n    documents = []\n    if os.path.isfile(document_path):\n   \
+          \     # Check if this is a JSON file with a list of document paths\n   \
+          \     if document_path.endswith('.json'):\n            try:\n          \
+          \      with open(document_path, 'r') as f:\n                    file_data\
+          \ = json.load(f)\n                    if isinstance(file_data, list):\n\
+          \                        documents = file_data\n                    elif\
+          \ isinstance(file_data, dict) and 'document_paths' in file_data:\n     \
+          \                   documents = file_data['document_paths']\n          \
+          \          elif isinstance(file_data, dict) and 'documents' in file_data:\n\
+          \                        documents = file_data['documents']\n          \
+          \          else:\n                        documents = [document_path]\n\
+          \            except json.JSONDecodeError:\n                documents = [document_path]\n\
+          \        else:\n            documents = [document_path]\n\n    # === Step\
+          \ 3: Convert, Chunk, and Prepare Documents ===\n    # converter format option\
+          \ for the pictures on pdf to be generated as base64\n    pipeline_options\
+          \ = PdfPipelineOptions()\n    pipeline_options.generate_picture_images =\
+          \ True\n    converter = DocumentConverter(\n                format_options={\n\
+          \                InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)\n\
+          \            }\n    )\n    chunker = HybridChunker()\n    llama_documents:\
+          \ list[LlamaStackDocument] = []\n    i = 0\n    processing_metrics = {\n\
+          \        \"document_count\": len(documents),\n        \"processed_documents\"\
+          : [],\n        \"failed_documents\": []\n    }\n\n    for file_path in documents:\n\
+          \        print(f\"Processing {file_path}...\")\n        try:\n         \
+          \   docling_doc = converter.convert(source=file_path).document\n       \
+          \     chunks = chunker.chunk(docling_doc)\n            chunk_count = 0\n\
+          \n            for chunk in chunks:\n                if any(\n          \
+          \          c.label in [DocItemLabel.TEXT, DocItemLabel.PARAGRAPH]\n    \
+          \                for c in chunk.meta.doc_items\n                ):\n   \
+          \                 i += 1\n                    chunk_count += 1\n       \
+          \             llama_documents.append(\n                        LlamaStackDocument(\n\
+          \                            document_id=f\"doc-{i}\",\n               \
+          \             content=chunk.text,\n                            mime_type=\"\
+          text/plain\",\n                            metadata={\"source\": file_path},\n\
+          \                        )\n                    )\n\n            processing_metrics[\"\
+          processed_documents\"].append({\n                \"file\": file_path,\n\
+          \                \"chunks\": chunk_count\n            })\n        except\
+          \ Exception as e:\n            error_message = str(e)\n            print(f\"\
+          Error processing {file_path}: {error_message}\")\n            processing_metrics[\"\
+          failed_documents\"].append({\n                \"file\": file_path,\n   \
+          \             \"error\": error_message\n            })\n\n    total_chunks\
+          \ = len(llama_documents)\n    processing_metrics[\"total_chunks\"] = total_chunks\n\
+          \    print(f\"Total valid documents prepared: {total_chunks}\")\n\n    #\
+          \ === Step 4: Create Vector DB ===\n    try:\n        client.vector_dbs.register(\n\
+          \            vector_db_id=vector_db_id,\n            embedding_model=embedding_model,\n\
+          \            embedding_dimension=embedding_dimension,\n            provider_id=provider_id,\n\
+          \        )\n        print(f\"Vector DB registered successfully: {vector_db_id}\"\
+          )\n        processing_metrics[\"vector_db_registration\"] = \"success\"\n\
+          \n    except Exception as e:\n        error_message = str(e)\n        print(f\"\
+          Failed to register vector DB '{vector_db_id}': {error_message}\")\n    \
+          \    processing_metrics[\"vector_db_registration\"] = {\n            \"\
+          status\": \"failed\",\n            \"error\": error_message\n        }\n\
+          \n    # === Step 5: Insert into Vector DB ===\n    try:\n        client.tool_runtime.rag_tool.insert(\n\
+          \            documents=llama_documents,\n            vector_db_id=vector_db_id,\n\
+          \            chunk_size_in_tokens=512,\n        )\n        print(\"Documents\
+          \ successfully inserted into the vector DB.\")\n        processing_metrics[\"\
+          vector_db_insertion\"] = \"success\"\n\n    except Exception as e:\n   \
+          \     error_message = str(e)\n        print(f\"Error inserting documents\
+          \ into RAG tool: {error_message}\")\n        processing_metrics[\"vector_db_insertion\"\
+          ] = {\n            \"status\": \"failed\",\n            \"error\": error_message\n\
+          \        }\n\n    # Write metrics to output\n    with open(metrics_path,\
+          \ 'w') as f:\n        json.dump(processing_metrics, f, indent=2)\n\n   \
+          \ return total_chunks\n\n"
+        image: python:3.9
+    exec-s3-document-provider:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - s3_document_provider
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.12.1'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
+          \  python3 -m pip install --quiet --no-warn-script-location 'boto3' 'botocore'\
+          \ && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef s3_document_provider(\n    output_path: OutputPath(),\n    bucket_name:\
+          \ str,\n    minio_endpoint: str,\n    minio_access_key: str,\n    minio_secret_key:\
+          \ str,\n    file_prefix: str = \"\",\n    file_extensions: list = [\".pdf\"\
+          ],\n    max_files: int = 100,\n    download_dir: str = \"/tmp/documents\"\
+          \n):\n    \"\"\"\n    Fetches documents from an S3/MinIO bucket and prepares\
+          \ them for RAG processing.\n\n    Args:\n        output_path: Path to write\
+          \ the list of downloaded document paths\n        bucket_name: Name of the\
+          \ S3/MinIO bucket\n        minio_endpoint: MinIO/S3 endpoint URL\n     \
+          \   minio_access_key: MinIO/S3 access key\n        minio_secret_key: MinIO/S3\
+          \ secret key\n        file_prefix: Only fetch files with this prefix (optional)\n\
+          \        file_extensions: List of file extensions to fetch (default: [\"\
+          .pdf\"])\n        max_files: Maximum number of files to fetch (default:\
+          \ 100)\n        download_dir: Directory to download files to (default: \"\
+          /tmp/documents\")\n    \"\"\"\n    import boto3\n    from botocore.client\
+          \ import Config\n\n    # Create output directory if it doesn't exist\n \
+          \   os.makedirs(download_dir, exist_ok=True)\n\n    # Initialize S3 client\n\
+          \    s3 = boto3.client(\n        \"s3\",\n        endpoint_url=minio_endpoint,\n\
+          \        aws_access_key_id=minio_access_key,\n        aws_secret_access_key=minio_secret_key,\n\
+          \        config=Config(signature_version='s3v4')\n    )\n\n    print(f\"\
+          Fetching documents from bucket: {bucket_name} with prefix: {file_prefix}\"\
+          )\n\n    # List objects in the bucket\n    paginator = s3.get_paginator('list_objects_v2')\n\
+          \    pages = paginator.paginate(Bucket=bucket_name, Prefix=file_prefix)\n\
+          \n    # Track downloaded files\n    downloaded_files = []\n    file_count\
+          \ = 0\n\n    # Process each object\n    for page in pages:\n        if 'Contents'\
+          \ not in page:\n            continue\n\n        for obj in page['Contents']:\n\
+          \            key = obj['Key']\n\n            # Skip if it doesn't have one\
+          \ of the specified extensions\n            if not any(key.lower().endswith(ext.lower())\
+          \ for ext in file_extensions):\n                continue\n\n           \
+          \ # Download the file\n            local_file_path = os.path.join(download_dir,\
+          \ os.path.basename(key))\n\n            print(f\"Downloading {key} to {local_file_path}\"\
+          )\n            try:\n                s3.download_file(bucket_name, key,\
+          \ local_file_path)\n                downloaded_files.append({\n        \
+          \            \"file_path\": local_file_path,\n                    \"key\"\
+          : key,\n                    \"size\": obj['Size'],\n                   \
+          \ \"last_modified\": obj['LastModified'].isoformat()\n                })\n\
+          \                file_count += 1\n\n                if file_count >= max_files:\n\
+          \                    print(f\"Reached max files limit ({max_files})\")\n\
+          \                    break\n\n            except Exception as e:\n     \
+          \           print(f\"Error downloading {key}: {str(e)}\")\n\n        if\
+          \ file_count >= max_files:\n            break\n\n    # Write the list of\
+          \ downloaded files to the output path\n    result = {\n        \"document_paths\"\
+          : [doc[\"file_path\"] for doc in downloaded_files],\n        \"metadata\"\
+          : {\n            \"bucket\": bucket_name,\n            \"endpoint\": minio_endpoint,\n\
+          \            \"file_count\": len(downloaded_files),\n            \"details\"\
+          : downloaded_files\n        }\n    }\n\n    with open(output_path, 'w')\
+          \ as f:\n        json.dump(result, f, indent=2)\n\n    print(f\"Downloaded\
+          \ {len(downloaded_files)} documents to {download_dir}\")\n    print(f\"\
+          Document paths written to {output_path}\")\n\n    return result\n\n"
+        image: python:3.9
+pipelineInfo:
+  description: Pipeline that fetches documents from S3/MinIO and processes them for
+    RAG
+  name: s3-rag-document-ingestion-pipeline
+root:
+  dag:
+    tasks:
+      rag-docling-component:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-rag-docling-component
+        dependentTasks:
+        - s3-document-provider
+        inputs:
+          artifacts:
+            document_path:
+              taskOutputArtifact:
+                outputArtifactKey: output_path
+                producerTask: s3-document-provider
+          parameters:
+            embedding_dimension:
+              componentInputParameter: embedding_dimension
+            embedding_model:
+              componentInputParameter: embedding_model
+            llama_stack_url:
+              componentInputParameter: llama_stack_url
+            provider_id:
+              componentInputParameter: provider_id
+            vector_db_id:
+              componentInputParameter: vector_db_id
+        taskInfo:
+          name: rag-docling-component
+      s3-document-provider:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-s3-document-provider
+        inputs:
+          parameters:
+            bucket_name:
+              componentInputParameter: bucket_name
+            file_extensions:
+              componentInputParameter: file_extensions
+            file_prefix:
+              componentInputParameter: file_prefix
+            max_files:
+              componentInputParameter: max_files
+            minio_access_key:
+              componentInputParameter: minio_access_key
+            minio_endpoint:
+              componentInputParameter: minio_endpoint
+            minio_secret_key:
+              componentInputParameter: minio_secret_key
+        taskInfo:
+          name: s3-document-provider
+  inputDefinitions:
+    parameters:
+      bucket_name:
+        defaultValue: llama
+        isOptional: true
+        parameterType: STRING
+      embedding_dimension:
+        defaultValue: 384.0
+        isOptional: true
+        parameterType: NUMBER_INTEGER
+      embedding_model:
+        defaultValue: all-MiniLM-L6-v2
+        isOptional: true
+        parameterType: STRING
+      file_extensions:
+        defaultValue:
+        - .pdf
+        isOptional: true
+        parameterType: LIST
+      file_prefix:
+        defaultValue: ''
+        isOptional: true
+        parameterType: STRING
+      llama_stack_url:
+        defaultValue: http://localhost:8321
+        isOptional: true
+        parameterType: STRING
+      max_files:
+        defaultValue: 50.0
+        isOptional: true
+        parameterType: NUMBER_INTEGER
+      minio_access_key:
+        defaultValue: minio
+        isOptional: true
+        parameterType: STRING
+      minio_endpoint:
+        defaultValue: http://minio-service:9000
+        isOptional: true
+        parameterType: STRING
+      minio_secret_key:
+        defaultValue: minio123
+        isOptional: true
+        parameterType: STRING
+      provider_id:
+        defaultValue: pgvector
+        isOptional: true
+        parameterType: STRING
+      vector_db_id:
+        defaultValue: pgvector
+        isOptional: true
+        parameterType: STRING
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.12.1

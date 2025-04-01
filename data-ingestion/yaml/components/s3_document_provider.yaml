@@ -1,0 +1,215 @@
+# PIPELINE DEFINITION
+# Name: s3-document-provider
+# Description: Fetches documents from an S3/MinIO bucket and prepares them for RAG processing.
+# Inputs:
+#    bucket_name: str
+#    download_dir: str [Default: '/tmp/documents']
+#    file_extensions: list [Default: ['.pdf']]
+#    file_prefix: str [Default: '']
+#    max_files: int [Default: 100.0]
+#    minio_access_key: str
+#    minio_endpoint: str
+#    minio_secret_key: str
+# Outputs:
+#    output_path: system.Artifact
+components:
+  comp-s3-document-provider:
+    executorLabel: exec-s3-document-provider
+    inputDefinitions:
+      parameters:
+        bucket_name:
+          description: Name of the S3/MinIO bucket
+          parameterType: STRING
+        download_dir:
+          defaultValue: /tmp/documents
+          description: 'Directory to download files to (default: "/tmp/documents")'
+          isOptional: true
+          parameterType: STRING
+        file_extensions:
+          defaultValue:
+          - .pdf
+          description: 'List of file extensions to fetch (default: [".pdf"])'
+          isOptional: true
+          parameterType: LIST
+        file_prefix:
+          defaultValue: ''
+          description: Only fetch files with this prefix (optional)
+          isOptional: true
+          parameterType: STRING
+        max_files:
+          defaultValue: 100.0
+          description: 'Maximum number of files to fetch (default: 100)'
+          isOptional: true
+          parameterType: NUMBER_INTEGER
+        minio_access_key:
+          description: MinIO/S3 access key
+          parameterType: STRING
+        minio_endpoint:
+          description: MinIO/S3 endpoint URL
+          parameterType: STRING
+        minio_secret_key:
+          description: MinIO/S3 secret key
+          parameterType: STRING
+    outputDefinitions:
+      artifacts:
+        output_path:
+          artifactType:
+            schemaTitle: system.Artifact
+            schemaVersion: 0.0.1
+deploymentSpec:
+  executors:
+    exec-s3-document-provider:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - s3_document_provider
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'kfp==2.12.1'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"'  &&\
+          \  python3 -m pip install --quiet --no-warn-script-location 'boto3' 'botocore'\
+          \ && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef s3_document_provider(\n    output_path: OutputPath(),\n    bucket_name:\
+          \ str,\n    minio_endpoint: str,\n    minio_access_key: str,\n    minio_secret_key:\
+          \ str,\n    file_prefix: str = \"\",\n    file_extensions: list = [\".pdf\"\
+          ],\n    max_files: int = 100,\n    download_dir: str = \"/tmp/documents\"\
+          \n):\n    \"\"\"\n    Fetches documents from an S3/MinIO bucket and prepares\
+          \ them for RAG processing.\n\n    Args:\n        output_path: Path to write\
+          \ the list of downloaded document paths\n        bucket_name: Name of the\
+          \ S3/MinIO bucket\n        minio_endpoint: MinIO/S3 endpoint URL\n     \
+          \   minio_access_key: MinIO/S3 access key\n        minio_secret_key: MinIO/S3\
+          \ secret key\n        file_prefix: Only fetch files with this prefix (optional)\n\
+          \        file_extensions: List of file extensions to fetch (default: [\"\
+          .pdf\"])\n        max_files: Maximum number of files to fetch (default:\
+          \ 100)\n        download_dir: Directory to download files to (default: \"\
+          /tmp/documents\")\n    \"\"\"\n    import boto3\n    from botocore.client\
+          \ import Config\n\n    # Create output directory if it doesn't exist\n \
+          \   os.makedirs(download_dir, exist_ok=True)\n\n    # Initialize S3 client\n\
+          \    s3 = boto3.client(\n        \"s3\",\n        endpoint_url=minio_endpoint,\n\
+          \        aws_access_key_id=minio_access_key,\n        aws_secret_access_key=minio_secret_key,\n\
+          \        config=Config(signature_version='s3v4')\n    )\n\n    print(f\"\
+          Fetching documents from bucket: {bucket_name} with prefix: {file_prefix}\"\
+          )\n\n    # List objects in the bucket\n    paginator = s3.get_paginator('list_objects_v2')\n\
+          \    pages = paginator.paginate(Bucket=bucket_name, Prefix=file_prefix)\n\
+          \n    # Track downloaded files\n    downloaded_files = []\n    file_count\
+          \ = 0\n\n    # Process each object\n    for page in pages:\n        if 'Contents'\
+          \ not in page:\n            continue\n\n        for obj in page['Contents']:\n\
+          \            key = obj['Key']\n\n            # Skip if it doesn't have one\
+          \ of the specified extensions\n            if not any(key.lower().endswith(ext.lower())\
+          \ for ext in file_extensions):\n                continue\n\n           \
+          \ # Download the file\n            local_file_path = os.path.join(download_dir,\
+          \ os.path.basename(key))\n\n            print(f\"Downloading {key} to {local_file_path}\"\
+          )\n            try:\n                s3.download_file(bucket_name, key,\
+          \ local_file_path)\n                downloaded_files.append({\n        \
+          \            \"file_path\": local_file_path,\n                    \"key\"\
+          : key,\n                    \"size\": obj['Size'],\n                   \
+          \ \"last_modified\": obj['LastModified'].isoformat()\n                })\n\
+          \                file_count += 1\n\n                if file_count >= max_files:\n\
+          \                    print(f\"Reached max files limit ({max_files})\")\n\
+          \                    break\n\n            except Exception as e:\n     \
+          \           print(f\"Error downloading {key}: {str(e)}\")\n\n        if\
+          \ file_count >= max_files:\n            break\n\n    # Write the list of\
+          \ downloaded files to the output path\n    result = {\n        \"document_paths\"\
+          : [doc[\"file_path\"] for doc in downloaded_files],\n        \"metadata\"\
+          : {\n            \"bucket\": bucket_name,\n            \"endpoint\": minio_endpoint,\n\
+          \            \"file_count\": len(downloaded_files),\n            \"details\"\
+          : downloaded_files\n        }\n    }\n\n    with open(output_path, 'w')\
+          \ as f:\n        json.dump(result, f, indent=2)\n\n    print(f\"Downloaded\
+          \ {len(downloaded_files)} documents to {download_dir}\")\n    print(f\"\
+          Document paths written to {output_path}\")\n\n    return result\n\n"
+        image: python:3.9
+pipelineInfo:
+  name: s3-document-provider
+root:
+  dag:
+    outputs:
+      artifacts:
+        output_path:
+          artifactSelectors:
+          - outputArtifactKey: output_path
+            producerSubtask: s3-document-provider
+    tasks:
+      s3-document-provider:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-s3-document-provider
+        inputs:
+          parameters:
+            bucket_name:
+              componentInputParameter: bucket_name
+            download_dir:
+              componentInputParameter: download_dir
+            file_extensions:
+              componentInputParameter: file_extensions
+            file_prefix:
+              componentInputParameter: file_prefix
+            max_files:
+              componentInputParameter: max_files
+            minio_access_key:
+              componentInputParameter: minio_access_key
+            minio_endpoint:
+              componentInputParameter: minio_endpoint
+            minio_secret_key:
+              componentInputParameter: minio_secret_key
+        taskInfo:
+          name: s3-document-provider
+  inputDefinitions:
+    parameters:
+      bucket_name:
+        description: Name of the S3/MinIO bucket
+        parameterType: STRING
+      download_dir:
+        defaultValue: /tmp/documents
+        description: 'Directory to download files to (default: "/tmp/documents")'
+        isOptional: true
+        parameterType: STRING
+      file_extensions:
+        defaultValue:
+        - .pdf
+        description: 'List of file extensions to fetch (default: [".pdf"])'
+        isOptional: true
+        parameterType: LIST
+      file_prefix:
+        defaultValue: ''
+        description: Only fetch files with this prefix (optional)
+        isOptional: true
+        parameterType: STRING
+      max_files:
+        defaultValue: 100.0
+        description: 'Maximum number of files to fetch (default: 100)'
+        isOptional: true
+        parameterType: NUMBER_INTEGER
+      minio_access_key:
+        description: MinIO/S3 access key
+        parameterType: STRING
+      minio_endpoint:
+        description: MinIO/S3 endpoint URL
+        parameterType: STRING
+      minio_secret_key:
+        description: MinIO/S3 secret key
+        parameterType: STRING
+  outputDefinitions:
+    artifacts:
+      output_path:
+        artifactType:
+          schemaTitle: system.Artifact
+          schemaVersion: 0.0.1
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.12.1
