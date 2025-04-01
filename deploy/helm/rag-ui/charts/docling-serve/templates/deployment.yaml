@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-docling
+  labels:
+    app: {{ .Release.Name }}-docling
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app: {{ .Release.Name }}-docling
+  template:
+    metadata:
+      labels:
+        app: {{ .Release.Name }}-docling
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+      - name: docling
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        ports:
+        - containerPort: {{ .Values.service.port }}
+        resources:
+          {{- toYaml .Values.resources | nindent 10 }}
