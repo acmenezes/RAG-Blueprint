@@ -6,14 +6,15 @@ This repository contains pipeline components for implementing a complete RAG (Re
 
 The pipeline consists of two main components:
 
-1. **S3/MinIO Document Provider** - Fetches documents from S3 or MinIO storage
-2. **RAG Docling Component** - Processes documents, chunks them, and stores them in a vector database
+1. **S3/MinIO Document Provider** - Fetches documents from S3 or MinIO storage, it also provides a way to fetch your documents from local files (for testing).
+
+2. **RAG Docling Component** - Processes documents, chunks them, and stores them in a vector database.
 
 ## Prerequisites
 
 - OpenShift AI (RHOAI) or Kubeflow Pipelines environment
 - Python 3.9+
-- Access to a Llama Stack API instance
+- Access to a Llama Stack API instance (llama stack in this ingestion pipeline is the gateway through which the pipeline writes data on the vector database. Cf. [main documentation](../README.md) and the [architecture design doc](../docs/rag-reference-architecture.md))
 - Access to S3/MinIO storage (optional)
 
 ## Installation
@@ -84,10 +85,11 @@ The component writes a JSON file with the following structure:
 ### Generating the Component
 
 ```bash
+cd components
 python s3_document_provider.py
 ```
 
-This will create `s3_document_provider_component.yaml` and `s3_document_provider_pipeline.yaml`.
+This will create `../yaml/components/s3_document_provider.yaml`
 
 ## Component 2: RAG Docling Component
 
@@ -97,18 +99,18 @@ This component processes documents using docling, chunks them, and stores them i
 
 - Processes documents from file paths
 - Chunks documents using a hybrid chunking approach
-- Embeds chunks using the specified embedding model
-- Stores vectors in a vector database (pgvector)
+- Embeds chunks using the specified embedding model (all-MiniLM-L6-v2 by default)
+- Stores vectors in a vector database (Postgres with vector extesion by default)
 
 ### Component Parameters
 
 - `document_path` (InputPath): Path to the document or a JSON file with document paths
 - `metrics_path` (OutputPath): Path to write processing metrics
 - `llama_stack_url` (str): URL for the Llama Stack API
-- `embedding_model` (str): Model to use for embeddings
-- `embedding_dimension` (int): Dimension size for embeddings
-- `provider_id` (str): Provider ID for vector database
-- `vector_db_id` (str): ID for the vector database
+- `embedding_model` (str): Model to use for embeddings (all-MiniLM-L6-v2 by default)
+- `embedding_dimension` (int): Dimension size for embeddings (384 by default)
+- `provider_id` (str): Provider ID for vector database (pgvector by default)
+- `vector_db_id` (str): ID for the vector database (pgvector by default)
 
 ### Input Format
 
@@ -145,10 +147,11 @@ The component generates a JSON metrics file with information about the processin
 ### Generating the Component
 
 ```bash
+cd components
 python rag_docling_component.py
 ```
 
-This will create `rag_docling_component.yaml` and `rag_pipeline.yaml`.
+This will create `../yaml/components/rag_docling_component.yaml`
 
 ## Complete S3-to-Vector Database Pipeline
 
@@ -160,13 +163,13 @@ A complete pipeline that integrates both components is available. This pipeline:
 ### Generating the Complete Pipeline
 
 ```bash
+cd pipelines
 python s3_rag_pipeline.py
 ```
 
-This will create:
-- `s3_document_provider_component.yaml` (if it doesn't exist)
-- `rag_docling_component.yaml` (if it doesn't exist)
-- `s3_rag_pipeline.yaml` (the complete pipeline)
+This will create`../yaml/pipelines/s3_rag_pipeline.yaml` (the complete pipeline)
+
+`s3_rag_pipeline.py` can be used as an example of how to build different pipelines while the components can also be used as examples on how new components can be created. If new type of storage, document processor or vector database is to be used new components and pipeline combinations can be put in place to accomplish those goals.
 
 ### Pipeline Parameters
 
@@ -188,40 +191,6 @@ The pipeline accepts parameters for both components:
 - `provider_id`: Provider ID for vector database
 - `vector_db_id`: ID for the vector database
 
-### Example Pipeline Code
-
-```python
-from kfp import dsl
-from kfp.compiler import Compiler
-from kfp.components import load_component_from_file
-
-# Load components
-s3_provider_op = load_component_from_file('s3_document_provider_component.yaml')
-rag_docling_op = load_component_from_file('rag_docling_component.yaml')
-
-@dsl.pipeline(
-    name="S3 RAG Pipeline",
-    description="Pipeline that fetches documents from S3/MinIO and processes them for RAG"
-)
-def s3_rag_pipeline():
-    # Fetch documents
-    s3_task = s3_provider_op(
-        bucket_name="my-bucket",
-        minio_endpoint="http://minio-service:9000",
-        minio_access_key="minio",
-        minio_secret_key="minio123",
-        file_prefix="documents/",
-        file_extensions=[".pdf", ".docx", ".txt"],
-        max_files=50
-    )
-    
-    # Process documents
-    rag_task = rag_docling_op(
-        document_path=s3_task.outputs['output'],
-        llama_stack_url="http://llama-stack-service:8321",
-        vector_db_id="my-vector-db"
-    )
-```
 
 ## Local Pipeline Runner
 
@@ -234,11 +203,12 @@ If you want to test the pipeline without deploying it to OpenShift AI/RHOAI, you
 - Configurable via command line arguments or programmatic API
 - Provides detailed metrics and logs
 
-### Using the Local Runner
+### Test scripts
 
 #### 1. Command Line Usage
 
 ```bash
+cd tests
 python local_pipeline_runner.py --help
 ```
 
@@ -283,9 +253,9 @@ print(f"Processed {metrics['document_count']} documents")
 print(f"Generated {metrics['total_chunks']} chunks")
 ```
 
-### Example Scripts
+### Sample test scripts
 
-The `examples` directory contains sample scripts for using the local runner:
+The `tests` directory contains sample scripts for using the local runner:
 
 - `run_with_local_files.sh` - Example of running with local PDF files
 - `run_with_minio.sh` - Example of fetching documents from MinIO
